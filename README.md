@@ -28,7 +28,8 @@ Only the SNI/IP-selected binding differs. That is the entire point: **no second 
 
 ## Prerequisites
 
-- **Windows 10/11** (TLS 1.3 via Schannel). SPP 9.0's base OS qualifies.
+- **Windows 11** (or Windows Server 2022+) — TLS 1.3 in Schannel requires it; Windows 10 does not
+  support TLS 1.3. SPP 9.0's base OS qualifies.
 - **Administrator** PowerShell (for `netsh`, the `hosts` file, port 443, and LocalMachine cert store).
 - **.NET SDK 8.0+** (`dotnet --version`). Download: <https://dotnet.microsoft.com/download>.
 - **Edge or Chrome** for the visual test (they use the Windows cert store). *Firefox uses its own
