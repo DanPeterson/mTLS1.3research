@@ -35,6 +35,7 @@ $cli = New-SelfSignedCertificate `
 Export-PfxCertificate -Cert $srv -FilePath (Join-Path $OutDir "server.pfx") -Password $pwd | Out-Null
 Export-Certificate    -Cert $srv -FilePath (Join-Path $OutDir "server.cer") | Out-Null   # public, for Trusted Root
 Export-PfxCertificate -Cert $cli -FilePath (Join-Path $OutDir "client.pfx") -Password $pwd | Out-Null
+Export-Certificate    -Cert $cli -FilePath (Join-Path $OutDir "client.cer") | Out-Null   # public, for Trusted Root (server-side mTLS validation)
 
 $manifest = [ordered]@{
     serverThumbprint = $srv.Thumbprint

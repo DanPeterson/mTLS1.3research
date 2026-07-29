@@ -27,6 +27,9 @@ Import-PfxCertificate -FilePath (Join-Path $certDir "server.pfx") -CertStoreLoca
 Write-Host "== Trusting server cert -> LocalMachine\Root (so browsers show no TLS warning) ==" -ForegroundColor Cyan
 Import-Certificate -FilePath (Join-Path $certDir "server.cer") -CertStoreLocation "Cert:\LocalMachine\Root" | Out-Null
 
+Write-Host "== Trusting client cert -> LocalMachine\Root (so the server fully validates the mTLS client chain) ==" -ForegroundColor Cyan
+Import-Certificate -FilePath (Join-Path $certDir "client.cer") -CertStoreLocation "Cert:\LocalMachine\Root" | Out-Null
+
 Write-Host "== Importing client cert -> CurrentUser\My (so a browser will offer it) ==" -ForegroundColor Cyan
 Import-PfxCertificate -FilePath (Join-Path $certDir "client.pfx") -CertStoreLocation "Cert:\CurrentUser\My" -Password $pwd | Out-Null
 

@@ -146,7 +146,7 @@ SDK-by-SDK rationale.
 ## Layout
 
 ```
-certs/     pre-generated demo certs (server.pfx/.cer, client.pfx), manifest.json, generate-certs.ps1
+certs/     pre-generated demo certs (server.pfx/.cer, client.pfx/.cer), manifest.json, generate-certs.ps1
 scripts/   1-setup.ps1  2-run-server.ps1  3-probe.ps1  4-cleanup.ps1
 src/       ASP.NET Core HTTP.sys server (Program.cs)
 docs/      empirical-results.md — captured evidence and rationale

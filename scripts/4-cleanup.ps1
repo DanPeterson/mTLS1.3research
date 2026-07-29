@@ -24,6 +24,7 @@ Write-Host "== Removing hosts entries ==" -ForegroundColor Cyan
 Write-Host "== Removing certificates ==" -ForegroundColor Cyan
 Remove-Item "Cert:\LocalMachine\My\$($manifest.serverThumbprint)"   -ErrorAction SilentlyContinue
 Remove-Item "Cert:\LocalMachine\Root\$($manifest.serverThumbprint)" -ErrorAction SilentlyContinue
+Remove-Item "Cert:\LocalMachine\Root\$($manifest.clientThumbprint)" -ErrorAction SilentlyContinue
 Remove-Item "Cert:\CurrentUser\My\$($manifest.clientThumbprint)"    -ErrorAction SilentlyContinue
 
 Write-Host "`nCleanup complete." -ForegroundColor Green

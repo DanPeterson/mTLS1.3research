@@ -1,6 +1,6 @@
 {
-  "serverThumbprint": "F3AD1FC9410E48F8822CED7B0B76B0EA30FC9F81",
-  "clientThumbprint": "3AE5B76F6B4E16FEE3CB8C1F6BE98609C8A81A0E",
+  "serverThumbprint": "55C7E3D1DBE20A9878B3951083FB276EE3721272",
+  "clientThumbprint": "0C1FDC0265DB78D8D25C943BAB856D363D496A57",
   "serverSubject": "CN=demo-server",
   "clientSubject": "CN=demo-client",
   "pfxPassword": "demo",
@@ -9,5 +9,5 @@
     "delay.local",
     "certauth.local"
   ],
-  "generatedUtc": "2026-07-29T16:43:04.3049289Z"
+  "generatedUtc": "2026-07-29T16:47:53.1950680Z"
 }
