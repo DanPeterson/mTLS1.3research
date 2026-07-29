@@ -1,13 +1,14 @@
 {
-  "serverThumbprint": "55C7E3D1DBE20A9878B3951083FB276EE3721272",
-  "clientThumbprint": "0C1FDC0265DB78D8D25C943BAB856D363D496A57",
+  "serverThumbprint": "122B08A4960CA579BB6265936A451F9A1B76AC92",
+  "clientThumbprint": "533E6C8EE16DC9A14554867C59B221F48DE9E03C",
   "serverSubject": "CN=demo-server",
   "clientSubject": "CN=demo-client",
   "pfxPassword": "demo",
   "appid": "{7b1e4c2a-9d3f-4a5b-8c6d-0e1f2a3b4c5d}",
   "hostnames": [
     "delay.local",
-    "certauth.local"
+    "certauth.local",
+    "nocert.local"
   ],
-  "generatedUtc": "2026-07-29T16:47:53.1950680Z"
+  "generatedUtc": "2026-07-29T17:15:50.9625590Z"
 }

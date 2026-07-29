@@ -6,25 +6,41 @@ using Microsoft.AspNetCore.Http.Features;
 
 // mTLS-on-443 research demo -- the production SPP stack: ASP.NET Core on HTTP.sys.
 //
-// HTTP.sys routes each TLS connection to a netsh sslcert binding chosen by the SNI hostname
-// (or the IP for raw-IP connections). The bindings created by scripts/1-setup.ps1 differ ONLY
-// by the clientcertnegotiation flag:
+// One process, one server certificate, one listener on 0.0.0.0:443. HTTP.sys routes each TLS
+// connection to a netsh sslcert binding chosen by the SNI hostname (or the IP for raw-IP
+// connections). The bindings created by scripts/1-setup.ps1 select THREE different client-cert
+// behaviors -- all on the same port -- and the app reflects what each one negotiated:
 //
-//   hostnameport=certauth.local:443  clientcertnegotiation=ENABLE   -> in-handshake CertificateRequest
-//   hostnameport=delay.local:443     clientcertnegotiation=DISABLE  -> no in-handshake request
-//   ipport=0.0.0.0:443               clientcertnegotiation=DISABLE  -> IP / wildcard fallback
+//   certauth.local  netsh clientcertnegotiation=ENABLE   app reads Connection.ClientCertificate
+//                   -> cert requested IN the TLS handshake, captured with NO renegotiation.
+//                      This is the FIX: works for every client, including HTTP/2 and TLS 1.3
+//                      clients that cannot do post-handshake auth.
 //
-// The app is a constant. It only READS the client certificate on the cert-auth host, so the
-// primary host performs NO post-handshake renegotiation and a browser is never prompted there.
-// On certauth.local the certificate was already captured during the TLS handshake (ENABLE binding),
-// so AllowCertificate returns it without any renegotiation.
+//   delay.local     netsh clientcertnegotiation=DISABLE  app calls GetClientCertificateAsync()
+//                   -> no in-handshake request; the cert is fetched AFTER the handshake via
+//                      renegotiation (TLS 1.2) / post-handshake authentication (TLS 1.3).
+//                      This models SPP's CURRENT default. It works for PHA-capable HTTP/1.1
+//                      clients but FAILS over HTTP/2 (which forbids PHA) and for TLS 1.3 clients
+//                      that don't implement PHA -- the exact regression behind the 7443 decision.
+//
+//   nocert.local    netsh clientcertnegotiation=DISABLE  app never reads the cert
+//   (and raw IP)    -> no client authentication at all (opt-out / "PHA off").
+//
+// delay.local and nocert.local carry the SAME netsh flag; the only difference is whether the app
+// asks for the cert. That is the teaching point: in-handshake vs delayed vs none is a combination
+// of the SNI-scoped binding and one app decision -- no second port anywhere.
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.WebHost.UseHttpSys(options =>
 {
     options.UrlPrefixes.Add("https://+:443/");
-    options.ClientCertificateMethod = ClientCertificateMethod.AllowCertificate; // no renegotiation
+    // AllowRenegotation permits the delayed/post-handshake retrieval that delay.local demonstrates.
+    // certauth.local still gets its cert IN the handshake (enable binding), so no renegotiation
+    // occurs there; nocert.local never asks. Override with DEMO_CERT_METHOD if you want to compare.
+    options.ClientCertificateMethod = Enum.TryParse<ClientCertificateMethod>(
+        Environment.GetEnvironmentVariable("DEMO_CERT_METHOD"), true, out var m)
+        ? m : ClientCertificateMethod.AllowRenegotation;
 });
 
 var app = builder.Build();
@@ -34,56 +50,90 @@ app.Run(async context =>
     var conn = context.Connection;
     var tls = context.Features.Get<ITlsHandshakeFeature>();
     string host = context.Request.Host.Host;
-    bool certAuthHost = string.Equals(host, "certauth.local", StringComparison.OrdinalIgnoreCase);
+    string httpProtocol = context.Request.Protocol; // HTTP/1.1 vs HTTP/2 -- matters for the delayed path
 
-    // Only touch the client cert on the cert-auth host -> primary host never renegotiates.
-    X509Certificate2? clientCert = certAuthHost ? conn.ClientCertificate : null;
+    string mode, modeDetail;
+    X509Certificate2? clientCert = null;
+    string? error = null;
+
+    if (string.Equals(host, "certauth.local", StringComparison.OrdinalIgnoreCase))
+    {
+        // IN-HANDSHAKE: the cert was requested during the TLS handshake (enable binding) and is
+        // already captured. Reading the property returns it WITHOUT any renegotiation.
+        mode = "IN-HANDSHAKE mTLS";
+        modeDetail = "netsh clientcertnegotiation=<b>enable</b> &rarr; cert requested during the TLS handshake, read from cache (no renegotiation). Works on HTTP/1.1 AND HTTP/2.";
+        clientCert = conn.ClientCertificate;
+    }
+    else if (string.Equals(host, "delay.local", StringComparison.OrdinalIgnoreCase))
+    {
+        // DELAYED / PHA: no in-handshake request. Fetch the cert AFTER the handshake, which forces
+        // renegotiation (TLS 1.2) or post-handshake authentication (TLS 1.3). This is the path that
+        // breaks over HTTP/2 (PHA forbidden) and for TLS 1.3 clients without PHA support.
+        mode = "DELAYED / post-handshake (PHA)";
+        modeDetail = "netsh clientcertnegotiation=<b>disable</b> &rarr; cert fetched AFTER the handshake via <code>GetClientCertificateAsync()</code> (renegotiation on 1.2, PHA on 1.3). <b>Fails over HTTP/2.</b>";
+        try
+        {
+            clientCert = await conn.GetClientCertificateAsync(context.RequestAborted);
+        }
+        catch (Exception ex)
+        {
+            // Over HTTP/2 the post-handshake request cannot be issued -> this is the regression.
+            error = ex.GetType().Name + ": " + ex.Message;
+        }
+    }
+    else
+    {
+        // OPT-OUT: same disable binding as delay.local, but the app never asks for a cert.
+        mode = "NO client auth";
+        modeDetail = "netsh clientcertnegotiation=<b>disable</b> &rarr; app never reads the certificate. No client authentication (opt-out / \"PHA off\").";
+    }
 
     string tlsVersion = tls?.Protocol.ToString() ?? "(unknown)";
-    string role = certAuthHost ? "CERT-AUTH endpoint" : "PRIMARY endpoint";
-    string binding = certAuthHost
-        ? "netsh clientcertnegotiation=<b>enable</b> (in-handshake CertificateRequest)"
-        : "netsh clientcertnegotiation=<b>disable</b> (no in-handshake request)";
-    string certLine = certAuthHost
-        ? (clientCert is null
-            ? "<span class='no'>no client certificate presented</span>"
-            : $"<span class='yes'>client certificate: {WebUtility.HtmlEncode(clientCert.Subject)}</span>")
-        : "<span class='muted'>client certificate not requested on this host</span>";
-    string banner = certAuthHost
-        ? (clientCert is null ? "#b58900" : "#2e7d32")
+    string certLine =
+        error is not null
+            ? $"<span class='no'>could not obtain client certificate &mdash; {WebUtility.HtmlEncode(error)}</span>"
+            : clientCert is null
+                ? "<span class='muted'>no client certificate</span>"
+                : $"<span class='yes'>{WebUtility.HtmlEncode(clientCert.Subject)}</span>";
+    string banner =
+        error is not null ? "#c62828"
+        : clientCert is not null ? "#2e7d32"
         : "#1565c0";
 
     string html = $$"""
 <!doctype html>
 <html><head><meta charset="utf-8"><title>mTLS 1.3 on 443 -- {{host}}</title>
 <style>
- body{font-family:Segoe UI,Arial,sans-serif;max-width:820px;margin:2rem auto;padding:0 1rem;color:#222}
+ body{font-family:Segoe UI,Arial,sans-serif;max-width:860px;margin:2rem auto;padding:0 1rem;color:#222}
  .banner{background:{{banner}};color:#fff;padding:1rem 1.25rem;border-radius:8px;font-size:1.15rem;font-weight:600}
  table{border-collapse:collapse;margin:1.25rem 0;width:100%}
  td{border:1px solid #ddd;padding:.5rem .75rem;vertical-align:top}
  td.k{background:#f6f6f6;font-weight:600;width:190px}
- .yes{color:#2e7d32;font-weight:700}.no{color:#b58900;font-weight:700}.muted{color:#777}
+ .yes{color:#2e7d32;font-weight:700}.no{color:#c62828;font-weight:700}.muted{color:#777}
  code{background:#f2f2f2;padding:.1rem .3rem;border-radius:4px}
  nav a{margin-right:1rem}
 </style></head><body>
-<div class="banner">{{role}} &mdash; served on port 443, TLS {{tlsVersion}}</div>
+<div class="banner">{{mode}} &mdash; port 443, TLS {{tlsVersion}}, {{httpProtocol}}</div>
 <table>
  <tr><td class="k">Host (SNI)</td><td><code>{{WebUtility.HtmlEncode(host)}}</code></td></tr>
  <tr><td class="k">Local endpoint</td><td><code>{{conn.LocalIpAddress}}:{{conn.LocalPort}}</code></td></tr>
  <tr><td class="k">TLS version</td><td><code>{{tlsVersion}}</code></td></tr>
- <tr><td class="k">Binding policy</td><td>{{binding}}</td></tr>
+ <tr><td class="k">HTTP version</td><td><code>{{httpProtocol}}</code></td></tr>
+ <tr><td class="k">Negotiation</td><td>{{modeDetail}}</td></tr>
  <tr><td class="k">Client cert</td><td>{{certLine}}</td></tr>
 </table>
 <p>All three hosts below resolve to the same listener on <b>0.0.0.0:443</b> in the same process,
-with the same server certificate. Only the SNI/IP-selected <code>netsh</code> binding differs.</p>
+with the same server certificate. Only the SNI-selected <code>netsh</code> binding and one app
+decision differ.</p>
 <nav>
- <a href="https://certauth.local/">certauth.local (mTLS)</a>
- <a href="https://delay.local/">delay.local (primary)</a>
- <a href="https://127.0.0.1/">127.0.0.1 (IP)</a>
+ <a href="https://certauth.local/">certauth.local (in-handshake)</a>
+ <a href="https://delay.local/">delay.local (delayed / PHA)</a>
+ <a href="https://nocert.local/">nocert.local (no auth)</a>
 </nav>
-<p class="muted">Browsing to <b>certauth.local</b> should prompt you to choose a client certificate
-(the in-handshake TLS 1.3 request). <b>delay.local</b> and <b>127.0.0.1</b> should NOT prompt.
-That contrast, on one port, is the whole point.</p>
+<p class="muted"><b>certauth.local</b> prompts for a certificate during the initial handshake and
+works in every browser. <b>delay.local</b> tries to fetch the cert AFTER the handshake, so a modern
+browser (HTTP/2) may fail or error here &mdash; that is the regression the in-handshake binding
+fixes. <b>nocert.local</b> never asks.</p>
 </body></html>
 """;
 

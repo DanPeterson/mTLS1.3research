@@ -11,7 +11,7 @@ $ErrorActionPreference = "Stop"
 $pwd = ConvertTo-SecureString $PfxPassword -AsPlainText -Force
 $appid = "{7b1e4c2a-9d3f-4a5b-8c6d-0e1f2a3b4c5d}"
 
-Write-Host "Generating server certificate (CN=demo-server; SAN dns=delay.local, dns=certauth.local, ip=127.0.0.1)..."
+Write-Host "Generating server certificate (CN=demo-server; SAN dns=delay.local, dns=certauth.local, dns=nocert.local, ip=127.0.0.1)..."
 $srv = New-SelfSignedCertificate `
     -Subject "CN=demo-server" `
     -CertStoreLocation "Cert:\CurrentUser\My" `
@@ -19,7 +19,7 @@ $srv = New-SelfSignedCertificate `
     -KeyUsage DigitalSignature,KeyEncipherment `
     -TextExtension @(
         "2.5.29.37={text}1.3.6.1.5.5.7.3.1",
-        "2.5.29.17={text}dns=delay.local&dns=certauth.local&ipaddress=127.0.0.1"
+        "2.5.29.17={text}dns=delay.local&dns=certauth.local&dns=nocert.local&ipaddress=127.0.0.1"
     ) `
     -NotAfter (Get-Date).AddYears(5)
 
@@ -44,7 +44,7 @@ $manifest = [ordered]@{
     clientSubject    = "CN=demo-client"
     pfxPassword      = $PfxPassword
     appid            = $appid
-    hostnames        = @("delay.local","certauth.local")
+    hostnames        = @("delay.local","certauth.local","nocert.local")
     generatedUtc     = (Get-Date).ToUniversalTime().ToString("o")
 }
 $manifest | ConvertTo-Json | Set-Content (Join-Path $OutDir "manifest.json")

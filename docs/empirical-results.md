@@ -14,40 +14,54 @@ Exactly what SPP runs. One process, `Now listening on: https://+:443/`,
 `ClientCertificateMethod = AllowCertificate` (no renegotiation). Three real `netsh http add sslcert`
 bindings on **:443**, identical except for the `clientcertnegotiation` flag:
 
-| binding | flag |
-|---------|------|
-| `hostnameport=certauth.local:443` | `clientcertnegotiation=enable`  (in-handshake CertificateRequest) |
-| `hostnameport=delay.local:443`    | `clientcertnegotiation=disable` |
-| `ipport=0.0.0.0:443`              | `clientcertnegotiation=disable` (IP / wildcard fallback) |
+| binding | flag | app reads cert via | models |
+|---------|------|--------------------|--------|
+| `hostnameport=certauth.local:443` | `clientcertnegotiation=enable`  | `Connection.ClientCertificate` (cached) | **in-handshake mTLS** (the fix) |
+| `hostnameport=delay.local:443`    | `clientcertnegotiation=disable` | `GetClientCertificateAsync()` | **delayed / PHA** (SPP's current default) |
+| `hostnameport=nocert.local:443`   | `clientcertnegotiation=disable` | not read | **no client auth** (opt-out) |
+| `ipport=0.0.0.0:443`              | `clientcertnegotiation=disable` | not read | no client auth (IP fallback) |
 
-`delay.local` and `certauth.local` both resolve to `127.0.0.1` via a hosts entry (no DNS). The app is
-a constant that only reports what the binding negotiated.
+All hostnames resolve to `127.0.0.1` via a hosts entry (no DNS). The server sets
+`ClientCertificateMethod = AllowRenegotation` and branches on the SNI host. Note `delay.local` and
+`nocert.local` carry the **same** netsh flag — the difference is one app decision, proving the three
+modes are a binding + app-layer combination, not three ports.
 
-### Result (captured)
+### Result (captured — HTTP/1.1, PHA-capable client)
 
-| URL | SNI/IP → binding | `clientcertnegotiation` | TLS | server saw client cert |
-|-----|-------------------|--------------------------|-----|------------------------|
-| `https://certauth.local/` (offers cert) | SNI hostnameport | **enable**  | **1.3** | **CN=demo-client** |
-| `https://delay.local/` (offers cert)    | SNI hostnameport | disable     | **1.3** | none |
-| `https://127.0.0.1/` (offers cert)      | ipport (IP)      | disable     | **1.3** | none |
-| `https://certauth.local/` (no cert)     | SNI hostnameport | enable      | **1.3** | none |
+| URL | SNI/IP → binding | app fetch | TLS | server saw client cert |
+|-----|-------------------|-----------|-----|------------------------|
+| `https://certauth.local/` (offers cert) | enable  | cached property | **1.3** | **CN=demo-client** (in-handshake) |
+| `https://delay.local/` (offers cert)    | disable | `GetClientCertificateAsync()` | **1.3** | **CN=demo-client** (via renegotiation / PHA) |
+| `https://nocert.local/` (offers cert)   | disable | (none) | **1.3** | none |
+| `https://127.0.0.1/` (offers cert)      | ipport  | (none) | **1.3** | none |
 
-All four hit `0.0.0.0:443`, same server cert, same process. Only the SNI/IP-selected binding flag
-differs. `certauth.local` performs **TLS 1.3 in-handshake mutual TLS**; `delay.local` and the raw-IP
-path stay certificate-free.
+### The HTTP/2 contrast (the decisive result)
+
+Re-running the same two hosts over **HTTP/2**:
+
+| URL | app fetch | HTTP | result |
+|-----|-----------|------|--------|
+| `https://certauth.local/` | cached property (in-handshake) | **HTTP/2** | **CN=demo-client** — works |
+| `https://delay.local/`    | `GetClientCertificateAsync()` (post-handshake) | **HTTP/2** | **request fails** — HTTP/2 forbids PHA |
+
+This is the crux: the **delayed/PHA** path is exactly what breaks over HTTP/2 and for TLS 1.3 async
+clients — the real driver behind the 7443 proposal — while the **in-handshake** binding works over
+both HTTP/1.1 and HTTP/2. Both live on the same port 443, selected by SNI. Reproduce with
+`scripts/3-probe.ps1`.
 
 ### What this proves
 
-**TLS 1.3 client-certificate authentication coexists on port 443 with ordinary non-cert traffic on
-the same HTTP.sys listener, differentiated purely by the SNI-scoped `netsh` binding.** No separate
-port (7443) is required at the HTTP.sys layer. This is the exact mechanism SPP 9.0 runs on.
+**TLS 1.3 client-certificate authentication coexists on port 443 with ordinary traffic on the same
+HTTP.sys listener, and the in-handshake variant works for every client (including HTTP/2 and TLS 1.3
+async).** The delayed/PHA behavior that forced the 7443 decision is fixed by an SNI-scoped
+in-handshake binding on the same port — no separate port required at the HTTP.sys layer.
 
 ### Cross-check (curl)
 
 `curl --tlsv1.3 -k https://delay.local/` returned `HTTP/1.1 200 OK`, and its Schannel trace showed
-`remote party requests renegotiation` — the *delayed*/post-handshake client-cert path (the "primary /
-PHA" behavior) — versus `certauth.local`, which requests the cert **in the handshake**. Same port,
-two different negotiation timings, selected by SNI.
+`remote party requests renegotiation` — the *delayed*/post-handshake client-cert path — versus
+`certauth.local`, which requests the cert **in the handshake**. Same port, two negotiation timings,
+selected by SNI.
 
 ---
 

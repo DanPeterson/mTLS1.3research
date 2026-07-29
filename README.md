@@ -15,13 +15,25 @@ hostname and **not** on another — same port, same server, same process.
 
 ## What you'll see
 
-| You browse to | Binding (`netsh clientcertnegotiation`) | Browser behavior |
-|---------------|------------------------------------------|------------------|
-| `https://certauth.local/` | **enable** (in-handshake CertificateRequest) | **Prompts** you to choose a client cert; page shows `CN=demo-client` |
-| `https://delay.local/`    | disable | **No prompt**; ordinary page |
-| `https://127.0.0.1/`      | disable (IP fallback) | **No prompt**; ordinary page |
+Three client-cert behaviors, all on port 443, selected purely by the SNI hostname:
 
-All three resolve to the same `0.0.0.0:443` listener in one process, using one server certificate.
+| You browse to | netsh binding | App behavior | Models | Browser |
+|---------------|---------------|--------------|--------|---------|
+| `https://certauth.local/` | `clientcertnegotiation=enable` | reads cached cert | **in-handshake mTLS** (the fix) | **Prompts**; page shows `CN=demo-client` |
+| `https://delay.local/` | `clientcertnegotiation=disable` | `GetClientCertificateAsync()` | **delayed / PHA** (SPP's current default) | prompts *after* load, or **errors** over HTTP/2 |
+| `https://nocert.local/` | `clientcertnegotiation=disable` | never reads cert | **no client auth** (opt-out) | **No prompt** |
+| `https://127.0.0.1/` | `clientcertnegotiation=disable` (IP) | never reads cert | no client auth (raw IP) | **No prompt** |
+
+`delay.local` and `nocert.local` carry the **same** netsh flag — the only difference is whether the
+app asks for the cert. That's the point: in-handshake vs delayed vs none is one SNI-scoped binding
+plus one app decision. No second port anywhere.
+
+**The HTTP/2 contrast (`3-probe.ps1`) is the money shot:** `certauth.local` returns the client cert
+over **both** HTTP/1.1 and HTTP/2, while `delay.local` **fails over HTTP/2** — because HTTP/2 forbids
+the post-handshake authentication the delayed path depends on. That failure is the real reason behind
+the 7443 proposal, and the in-handshake binding fixes it on the same port.
+
+All hosts resolve to the same `0.0.0.0:443` listener in one process, using one server certificate.
 Only the SNI/IP-selected binding differs. That is the entire point: **no second port is needed.**
 
 ---
@@ -47,7 +59,7 @@ certs for this proof only, never production. PFX password is `demo`. Regenerate 
 Open an **elevated** PowerShell in the repo root.
 
 ```powershell
-# 1. Trust/import certs, add hosts entries, create the three :443 bindings
+# 1. Trust/import certs, add hosts entries, create the four :443 bindings
 .\scripts\1-setup.ps1
 
 # 2. Start the server (leave running; Ctrl+C to stop)
@@ -57,8 +69,12 @@ Open an **elevated** PowerShell in the repo root.
 Then **verify visually** — open Edge or Chrome:
 
 - Browse to **https://certauth.local/** → you get a **"Select a certificate"** prompt. Choose
-  **demo-client**. The page confirms `client certificate: CN=demo-client`, TLS 1.3, port 443.
-- Browse to **https://delay.local/** → **no prompt**; the page says it's the primary endpoint.
+  **demo-client**. The page confirms client certificate `CN=demo-client`, TLS 1.3, port 443 — the
+  cert was requested **in the handshake**.
+- Browse to **https://nocert.local/** → **no prompt**; the app never asks for a cert.
+- Browse to **https://delay.local/** → the app tries to fetch the cert **after** the handshake. A
+  modern browser negotiates HTTP/2, where post-handshake auth is forbidden, so this page typically
+  **errors or hangs** — that is the delayed-path regression on display.
 - Browse to **https://127.0.0.1/** → **no prompt** (raw-IP path, no SNI).
 
 And/or **verify automatically** (any PowerShell, no elevation needed) in a second window:
@@ -67,21 +83,26 @@ And/or **verify automatically** (any PowerShell, no elevation needed) in a secon
 .\scripts\3-probe.ps1
 ```
 
-Expected:
+Expected (abridged):
 
 ```
-### https://certauth.local/   (client offers cert: True)
-  CERT-AUTH endpoint - served on port 443, TLS Tls13
-  client cert : client certificate: CN=demo-client
-### https://delay.local/      (client offers cert: True)
-  PRIMARY endpoint - served on port 443, TLS Tls13
-  client cert : client certificate not requested on this host
-### https://127.0.0.1/        (client offers cert: True)
-  PRIMARY endpoint - served on port 443, TLS Tls13
-  client cert : client certificate not requested on this host
-### https://certauth.local/   (client offers cert: False)
-  CERT-AUTH endpoint - served on port 443, TLS Tls13
-  client cert : no client certificate presented
+===== HTTP/1.1 -- all three behaviors succeed =====
+### https://certauth.local/  (HTTP/1.1, client offers cert: True)
+  IN-HANDSHAKE mTLS - port 443, TLS Tls13, HTTP/1.1
+  client cert : CN=demo-client
+### https://delay.local/     (HTTP/1.1, client offers cert: True)
+  DELAYED / post-handshake (PHA) - port 443, TLS Tls13, HTTP/1.1
+  client cert : CN=demo-client            # obtained via renegotiation
+### https://nocert.local/    (HTTP/1.1, client offers cert: True)
+  NO client auth - port 443, TLS Tls13, HTTP/1.1
+  client cert : no client certificate
+
+===== HTTP/2 -- the contrast that proves the binding problem =====
+### https://certauth.local/  (HTTP/2, client offers cert: True)
+  IN-HANDSHAKE mTLS - port 443, TLS Tls13, HTTP/2
+  client cert : CN=demo-client            # in-handshake works over HTTP/2
+### https://delay.local/     (HTTP/2, client offers cert: True)
+  REQUEST FAILED: ...                     # PHA is forbidden over HTTP/2
 ```
 
 When you're done:
@@ -91,29 +112,33 @@ When you're done:
 .\scripts\4-cleanup.ps1
 ```
 
-This removes the three bindings, the hosts entries, and all three imported certs.
+This removes the four bindings, the hosts entries, and all imported certs.
 
 ---
 
 ## How it works
 
 HTTP.sys terminates TLS in the kernel and selects a certificate binding by the **SNI hostname** in
-the ClientHello (or, for a raw-IP connection with no SNI, by the IP). `1-setup.ps1` creates three
-bindings on `:443` that are **identical except for `clientcertnegotiation`**:
+the ClientHello (or, for a raw-IP connection with no SNI, by the IP). `1-setup.ps1` creates four
+bindings on `:443` that differ only by `clientcertnegotiation`:
 
 ```
 netsh http add sslcert hostnameport=certauth.local:443 certhash=<server> appid=<guid> certstorename=MY clientcertnegotiation=enable
 netsh http add sslcert hostnameport=delay.local:443    certhash=<server> appid=<guid> certstorename=MY clientcertnegotiation=disable
+netsh http add sslcert hostnameport=nocert.local:443   certhash=<server> appid=<guid> certstorename=MY clientcertnegotiation=disable
 netsh http add sslcert ipport=0.0.0.0:443              certhash=<server> appid=<guid> certstorename=MY clientcertnegotiation=disable
 ```
 
-- `clientcertnegotiation=enable` makes HTTP.sys send a **CertificateRequest during the TLS 1.3
-  handshake** → the browser prompts, and the cert is captured with no renegotiation.
-- `clientcertnegotiation=disable` sends no in-handshake request → no prompt.
+- `clientcertnegotiation=enable` (certauth.local) makes HTTP.sys send a **CertificateRequest during
+  the TLS 1.3 handshake** → the browser prompts, and the cert is captured with no renegotiation.
+- `clientcertnegotiation=disable` sends no in-handshake request. What happens next is the **app's**
+  choice: `delay.local` calls `GetClientCertificateAsync()` (forcing renegotiation on TLS 1.2 /
+  post-handshake auth on TLS 1.3), while `nocert.local` and the raw-IP path never ask.
 
-The app (`src/Program.cs`) is a constant: `ClientCertificateMethod = AllowCertificate` (read the
-handshake-captured cert, **never renegotiate**), and it only reads the client cert on
-`certauth.local` so the primary host is completely undisturbed.
+The app (`src/Program.cs`) sets `ClientCertificateMethod = AllowRenegotation` (so the delayed path
+can retrieve a cert) and branches on the SNI host: read the cached in-handshake cert on
+`certauth.local`, fetch post-handshake on `delay.local`, ignore on everything else. One server, one
+cert, one port — three behaviors.
 
 ### Why this matters for SPP and the SDKs
 
@@ -140,6 +165,10 @@ SDK-by-SDK rationale.
   `:443` references in the scripts.
 - **`3-probe.ps1` SSL failures:** make sure the server (step 2) is running and `1-setup.ps1` imported
   the client cert into `CurrentUser\My`.
+- **`delay.local` errors in the browser or fails on the HTTP/2 probe:** that's **expected and is the
+  point** — the delayed/post-handshake path can't run over HTTP/2. `certauth.local` (in-handshake)
+  succeeds on both HTTP/1.1 and HTTP/2, which is the whole argument for keeping cert auth on 443 with
+  an in-handshake binding.
 
 ---
 

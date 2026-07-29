@@ -16,6 +16,7 @@ $marker   = "mTLS1.3research-demo"
 Write-Host "== Removing netsh sslcert bindings ==" -ForegroundColor Cyan
 netsh http delete sslcert hostnameport=certauth.local:443 2>$null
 netsh http delete sslcert hostnameport=delay.local:443    2>$null
+netsh http delete sslcert hostnameport=nocert.local:443   2>$null
 netsh http delete sslcert ipport=0.0.0.0:443              2>$null
 
 Write-Host "== Removing hosts entries ==" -ForegroundColor Cyan

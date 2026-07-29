@@ -45,17 +45,20 @@ $hash = $manifest.serverThumbprint
 $app  = $manifest.appid
 netsh http delete sslcert hostnameport=certauth.local:443 2>$null | Out-Null
 netsh http delete sslcert hostnameport=delay.local:443    2>$null | Out-Null
+netsh http delete sslcert hostnameport=nocert.local:443   2>$null | Out-Null
 netsh http delete sslcert ipport=0.0.0.0:443              2>$null | Out-Null
-# certauth.local => request the client cert IN the handshake (opt-in mTLS)
+# certauth.local => request the client cert IN the handshake (opt-in mTLS, the fix)
 netsh http add sslcert hostnameport=certauth.local:443 certhash=$hash appid=$app certstorename=MY clientcertnegotiation=enable
-# delay.local => NO in-handshake request (ordinary primary traffic)
+# delay.local => NO in-handshake request; app fetches the cert post-handshake (delayed / PHA)
 netsh http add sslcert hostnameport=delay.local:443    certhash=$hash appid=$app certstorename=MY clientcertnegotiation=disable
+# nocert.local => NO in-handshake request; app never asks (opt-out). Same flag as delay.local.
+netsh http add sslcert hostnameport=nocert.local:443   certhash=$hash appid=$app certstorename=MY clientcertnegotiation=disable
 # IP / wildcard fallback => NO in-handshake request
 netsh http add sslcert ipport=0.0.0.0:443              certhash=$hash appid=$app certstorename=MY clientcertnegotiation=disable
 
 Write-Host "`n== Bindings now on :443 ==" -ForegroundColor Cyan
 netsh http show sslcert | Select-String -Pattern "Hostname:port|IP:port|Negotiate Client Certificate" |
-    Where-Object { $_ -match "certauth.local|delay.local|0.0.0.0:443" -or $_ -match "Negotiate" }
+    Where-Object { $_ -match "certauth.local|delay.local|nocert.local|0.0.0.0:443" -or $_ -match "Negotiate" }
 
 Write-Host "`nSetup complete." -ForegroundColor Green
 Write-Host "Next (ELEVATED): .\2-run-server.ps1     then browse to https://certauth.local/" -ForegroundColor Yellow
