@@ -1,15 +1,15 @@
-# mTLS 1.3 on port 443 — empirical proof
+# TLS 1.3 mutual TLS on port 443
 
-**Claim under test:** *"TLS 1.3 client-certificate (mutual TLS) authentication requires its own
-port; it can't share 443 with everything else."*
+**Question under test:** *Does TLS 1.3 client-certificate (mutual TLS) authentication require its own
+port, or can it share 443 with all other traffic?*
 
-**Result:** False. This repo is a self-contained, runnable proof that on **one** port (443), on the
-**exact production stack SPP uses** (ASP.NET Core on **HTTP.sys**), TLS 1.3 in-handshake mutual TLS
-coexists with ordinary non-cert traffic — differentiated purely by the **SNI hostname**, via three
-`netsh http add sslcert` bindings that differ only by one flag.
+**Finding:** It can share 443. This repository is a self-contained, runnable demonstration that on a
+**single** port (443), using the **same production stack as SPP** (ASP.NET Core on **HTTP.sys**), TLS
+1.3 in-handshake mutual TLS coexists with ordinary non-certificate traffic, differentiated by the
+**SNI hostname** through three `netsh http add sslcert` bindings that differ by a single flag.
 
-Run it yourself in ~2 minutes and watch a browser get prompted for a client certificate on one
-hostname and **not** on another — same port, same server, same process.
+The demo runs in a few minutes and lets you confirm in a browser that one hostname prompts for a
+client certificate while another does not — same port, same server, same process.
 
 ---
 
@@ -17,25 +17,25 @@ hostname and **not** on another — same port, same server, same process.
 
 Three client-cert behaviors, all on port 443, selected purely by the SNI hostname:
 
-| You browse to | netsh binding | App behavior | Models | Browser |
-|---------------|---------------|--------------|--------|---------|
-| `https://certauth.local/` | `clientcertnegotiation=enable` | reads cached cert | **in-handshake mTLS** (the fix) | **Prompts**; page shows `CN=demo-client` |
+| You browse to | netsh binding | App behavior | Behavior modeled | Browser |
+|---------------|---------------|--------------|------------------|---------|
+| `https://certauth.local/` | `clientcertnegotiation=enable` | reads cached cert | **in-handshake mTLS** (recommended) | **Prompts**; page shows `CN=demo-client` |
 | `https://delay.local/` | `clientcertnegotiation=disable` | `GetClientCertificateAsync()` | **delayed / PHA** (SPP's current default) | prompts on HTTP/1.1; over HTTP/2 gets **no cert** (auth fails) |
 | `https://nocert.local/` | `clientcertnegotiation=disable` | never reads cert | **no client auth** (opt-out) | **No prompt** |
 | `https://127.0.0.1/` | `clientcertnegotiation=disable` (IP) | never reads cert | no client auth (raw IP) | **No prompt** |
 
-`delay.local` and `nocert.local` carry the **same** netsh flag — the only difference is whether the
-app asks for the cert. That's the point: in-handshake vs delayed vs none is one SNI-scoped binding
-plus one app decision. No second port anywhere.
+`delay.local` and `nocert.local` carry the **same** netsh flag; the only difference is whether the
+app requests the certificate. In-handshake, delayed, and no-auth are the result of one SNI-scoped
+binding plus one application decision — not a separate port.
 
-**The HTTP/2 contrast (`3-probe.ps1`) is the money shot:** `certauth.local` authenticates the client
-cert over **both** HTTP/1.1 and HTTP/2, while `delay.local` gets **no cert over HTTP/2** — because
-HTTP/2 forbids the post-handshake authentication the delayed path depends on. The same client offering
-the same cert authenticates on the in-handshake binding but not the delayed one. That gap is the real
-reason behind the 7443 proposal, and the in-handshake binding closes it on the same port.
+**Why the HTTP/2 comparison matters (`3-probe.ps1`):** `certauth.local` authenticates the client
+certificate over **both** HTTP/1.1 and HTTP/2, while `delay.local` obtains **no certificate over
+HTTP/2**, because HTTP/2 does not permit the post-handshake authentication the delayed path relies on.
+The same client presenting the same certificate succeeds on the in-handshake binding and fails on the
+delayed one. Requesting the certificate during the handshake resolves this on the same port.
 
-All hosts resolve to the same `0.0.0.0:443` listener in one process, using one server certificate.
-Only the SNI/IP-selected binding differs. That is the entire point: **no second port is needed.**
+All hosts resolve to the same `0.0.0.0:443` listener in one process, using one server certificate;
+only the SNI/IP-selected binding differs. No second port is involved.
 
 ---
 
@@ -111,10 +111,10 @@ Expected (from a real run):
   client cert : no client certificate     # client offered a cert, but PHA is forbidden on HTTP/2
 ```
 
-The last two lines are the whole argument: **the same client offering the same certificate is
-authenticated on `certauth.local` over HTTP/2, but gets no cert on `delay.local` over HTTP/2** — the
-delayed/post-handshake path can't collect it. Move the request to the in-handshake binding and it
-works, on the same port 443.
+These last two results are the core finding: **the same client presenting the same certificate is
+authenticated on `certauth.local` over HTTP/2, but obtains no certificate on `delay.local` over
+HTTP/2** — the delayed/post-handshake path cannot collect it. Requesting the certificate in the
+handshake resolves this on the same port 443.
 
 ### The recommended deployment: authenticate once, then bearer (same hostname)
 
@@ -176,12 +176,12 @@ cert, one port — three behaviors.
 
 ### Why this matters for SPP and the SDKs
 
-Keeping cert auth on 443 with an **SNI-scoped, in-handshake** binding fixes the TLS 1.3 clients that
-break under post-handshake auth (Node.js, Java, Python `aiohttp`, and anything on HTTP/2, which
-forbids PHA) **without a client code change and without a second port**. The default hostname can
-keep today's delayed/PHA behavior so the existing PHA-capable fleet (.NET, PowerShell, Python
-`requests`, curl) is zero-touch. See `docs/empirical-results.md` for the captured runs and the
-SDK-by-SDK rationale.
+Keeping certificate auth on 443 with an **SNI-scoped, in-handshake** binding restores the TLS 1.3
+clients that fail under post-handshake authentication (Node.js, Java, Python `aiohttp`, and any client
+on HTTP/2, which does not permit PHA) — with no client code change and no additional port. The primary
+hostname can retain today's delayed/PHA behavior, so the existing PHA-capable clients (.NET,
+PowerShell, Python `requests`, curl) require no changes. See `docs/empirical-results.md` for the
+captured runs and the SDK-by-SDK rationale.
 
 ### Where each setting lives: netsh vs. app (and what "require" really means)
 
@@ -236,10 +236,9 @@ contrast. Set `DEMO_CERT_METHOD=AllowCertificate` to run the server the recommen
   `:443` references in the scripts.
 - **`3-probe.ps1` SSL failures:** make sure the server (step 2) is running and `1-setup.ps1` imported
   the client cert into `CurrentUser\My`.
-- **`delay.local` errors in the browser or fails on the HTTP/2 probe:** that's **expected and is the
-  point** — the delayed/post-handshake path can't run over HTTP/2. `certauth.local` (in-handshake)
-  succeeds on both HTTP/1.1 and HTTP/2, which is the whole argument for keeping cert auth on 443 with
-  an in-handshake binding.
+- **`delay.local` errors in the browser or fails on the HTTP/2 probe:** this is expected. The
+  delayed/post-handshake path cannot run over HTTP/2. `certauth.local` (in-handshake) succeeds on
+  both HTTP/1.1 and HTTP/2, which is why an in-handshake binding keeps certificate auth on 443.
 
 ---
 
