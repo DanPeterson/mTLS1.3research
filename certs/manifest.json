@@ -1,0 +1,13 @@
+{
+  "serverThumbprint": "F855C4FB5717E255EB09DA9156942607DEF4968D",
+  "clientThumbprint": "E2F7FB17100B12A57D36320163DDDD71DCF30C4D",
+  "serverSubject": "CN=demo-server",
+  "clientSubject": "CN=demo-client",
+  "pfxPassword": "demo",
+  "appid": "{7b1e4c2a-9d3f-4a5b-8c6d-0e1f2a3b4c5d}",
+  "hostnames": [
+    "delay.local",
+    "certauth.local"
+  ],
+  "generatedUtc": "2026-07-29T16:31:27.7183548Z"
+}
