@@ -183,6 +183,43 @@ keep today's delayed/PHA behavior so the existing PHA-capable fleet (.NET, Power
 `requests`, curl) is zero-touch. See `docs/empirical-results.md` for the captured runs and the
 SDK-by-SDK rationale.
 
+### Where each setting lives: netsh vs. app (and what "require" really means)
+
+A common misconception is that you set client-cert *policy* on the `netsh` binding. You don't. There
+are **three layers**, and "require" only exists in the top one:
+
+| Layer | Setting | Allowed values | What it controls |
+|-------|---------|----------------|------------------|
+| **1. netsh binding** (transport) | `clientcertnegotiation` | `enable` / `disable` **only** | Whether HTTP.sys sends a `CertificateRequest` **in the handshake**. **There is no `require`.** Even with `enable`, a TLS 1.3 client may answer with an *empty* cert and the handshake still completes. |
+| **2. app / HttpSys** (framework) | `ClientCertificateMethod` | `NoCertificate` / `AllowCertificate` / `AllowRenegotation` | How the app *collects* the cert: from the handshake (`AllowCertificate`, pairs with `enable`) or post-handshake (`AllowRenegotation`, the PHA path that breaks HTTP/2). Still **no `require`** — it only *collects*. |
+| **3. app / your code** (policy) | inspect the cert, return **403** if missing | your logic | **This is the only place "require" exists.** Scope it to the endpoints that need a cert (e.g. the token grant). |
+
+So `netsh clientcertnegotiation=enable` means **"offer the client the chance to authenticate,"** not
+**"reject if absent."** "Require" is an *application* decision made per-endpoint (`/token` returns 403
+without a cert; every other path is bearer-authorized). See `src/Program.cs` — `/token` enforces the
+cert, `/api/whoami` does not.
+
+**Why this matters for the "set it to require" plan.** If "require" is applied at the transport /
+whole-listener level (e.g. Kestrel's `ClientCertificateMode.RequireCertificate`, which only applies
+when Kestrel — not HTTP.sys — terminates TLS, or a mandatory-cert Schannel flag), **every** client to
+that host must present a cert or the connection is refused: browsers doing SAML/password login, health
+checks, and bearer-only API calls all break, forcing them back to the primary hostname. Scope
+"require" to the token endpoint in the app instead — then a client authenticates once with its cert,
+gets a bearer, and keeps calling the **same** cert-auth hostname with the token and no cert.
+
+### Recommended end-to-end configuration (production shape)
+
+| Hostname (URL) | netsh `clientcertnegotiation` | app `ClientCertificateMethod` | per-path policy |
+|----------------|-------------------------------|-------------------------------|-----------------|
+| `spp.example.com` (primary web UI + API) | `disable` | `AllowCertificate` | bearer / SAML / password — **no cert prompt** |
+| `certauth.spp.example.com` (cert login + A2A token grant) | `enable` | `AllowCertificate` | token grant path: **require cert → 403 if absent**; all other paths: **bearer, cert optional** |
+| `0.0.0.0:443` (raw-IP / no-SNI fallback) | `disable` | `AllowCertificate` | no cert |
+
+All three are the **same listener on port 443**, selected by SNI. Note the recommended
+`ClientCertificateMethod` is `AllowCertificate` (in-handshake, no renegotiation) — this demo defaults
+to `AllowRenegotation` only so it can *also* show the broken delayed/PHA path on `delay.local` for
+contrast. Set `DEMO_CERT_METHOD=AllowCertificate` to run the server the recommended way.
+
 ---
 
 ## Troubleshooting
