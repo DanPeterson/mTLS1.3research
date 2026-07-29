@@ -116,6 +116,29 @@ authenticated on `certauth.local` over HTTP/2, but gets no cert on `delay.local`
 delayed/post-handshake path can't collect it. Move the request to the in-handshake binding and it
 works, on the same port 443.
 
+### The recommended deployment: authenticate once, then bearer (same hostname)
+
+The probe then runs the **clean design** an SDK like SafeguardJava actually uses — cert only to *mint*
+a token, bearer for everything after — all on the one cert-auth hostname:
+
+```
+===== CLEAN DESIGN -- authenticate once with the cert, then use a bearer token =====
+### /token  WITH client cert           -> HTTP 200
+  issued access_token : 9f3c...            # cert presented IN the handshake -> token minted
+### /api/whoami  NO cert + bearer       -> HTTP 200
+  {"message":"authorized by bearer token -- no client certificate was needed on this call",
+   "presented_client_cert":false, ...}     # SAME cert SNI, NO client cert, bearer alone authorizes
+### /token  WITHOUT cert (negative)     -> HTTP 403   (cert required only here)
+### /api/whoami  WITHOUT bearer (neg)   -> HTTP 401   (bearer required here)
+```
+
+This models the exact SDK flow: the client presents its cert **once** to `/token` on the cert-auth
+hostname, gets an access token, and keeps calling the **same** hostname with just
+`Authorization: Bearer …` — no client cert on the later calls, no switch back to the primary DNS name.
+The cert SNI is `clientcertnegotiation=enable` (in-handshake) and treats the cert as **optional
+(allow)**, with the requirement scoped to the token endpoint. Two endpoints (`/token`, `/api/whoami`)
+on `certauth.local` implement it; see `src/Program.cs`.
+
 When you're done:
 
 ```powershell

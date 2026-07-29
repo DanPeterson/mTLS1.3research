@@ -45,12 +45,75 @@ builder.WebHost.UseHttpSys(options =>
 
 var app = builder.Build();
 
+// In-memory "token store" for the clean-design demo (token -> cert subject). This stands in for the
+// STS: /token issues a magic number after validating the in-handshake client cert; /api/whoami
+// accepts that magic number as a bearer with no client cert required.
+var issuedTokens = new System.Collections.Concurrent.ConcurrentDictionary<string, string>();
+
 app.Run(async context =>
 {
     var conn = context.Connection;
     var tls = context.Features.Get<ITlsHandshakeFeature>();
     string host = context.Request.Host.Host;
+    string path = context.Request.Path.Value ?? "/";
     string httpProtocol = context.Request.Protocol; // HTTP/1.1 vs HTTP/2 -- matters for the delayed path
+
+    // -------------------------------------------------------------------------------------------
+    // Clean-design demo: "cert once -> bearer thereafter", ALL on the cert SNI (certauth.local).
+    //
+    //   GET /token       REQUIRES the in-handshake client cert (the ONLY place a cert is required).
+    //                    Validates conn.ClientCertificate, then returns a simulated access token.
+    //   GET /api/whoami  REQUIRES the bearer token but NOT a client cert. This proves a no-cert call
+    //                    to the SAME cert-SNI host succeeds as long as it carries the token -- so a
+    //                    SafeguardJava-style client authenticates once with its cert, gets a token,
+    //                    and keeps calling the same hostname with just the bearer. No host switch,
+    //                    no keystore needed on the later calls.
+    //
+    // This is why the cert SNI should be enable + "allow" (optional), with the cert requirement
+    // scoped to the token endpoint -- exactly how SPP already treats cert auth today.
+    // -------------------------------------------------------------------------------------------
+    if (string.Equals(path, "/token", StringComparison.OrdinalIgnoreCase))
+    {
+        var cert = conn.ClientCertificate; // populated in-handshake on the enable binding
+        if (cert is null)
+        {
+            context.Response.StatusCode = StatusCodes.Status403Forbidden;
+            await context.Response.WriteAsJsonAsync(new { error = "client certificate required to obtain a token" });
+            return;
+        }
+        var token = Guid.NewGuid().ToString("N"); // the "magic number" standing in for an access token
+        issuedTokens[token] = cert.Subject;
+        await context.Response.WriteAsJsonAsync(new
+        {
+            access_token = token,
+            token_type = "Bearer",
+            subject = cert.Subject,
+            note = "Send 'Authorization: Bearer <access_token>' to /api/whoami -- no client cert needed."
+        });
+        return;
+    }
+    if (string.Equals(path, "/api/whoami", StringComparison.OrdinalIgnoreCase))
+    {
+        string? authHeader = context.Request.Headers.Authorization;
+        string? bearer = (authHeader is not null && authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+            ? authHeader.Substring("Bearer ".Length).Trim()
+            : null;
+        if (bearer is null || !issuedTokens.TryGetValue(bearer, out var subject))
+        {
+            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            await context.Response.WriteAsJsonAsync(new { error = "a valid bearer token is required" });
+            return;
+        }
+        await context.Response.WriteAsJsonAsync(new
+        {
+            message = "authorized by bearer token -- no client certificate was needed on this call",
+            token_subject = subject,
+            presented_client_cert = conn.ClientCertificate is not null,
+            http = httpProtocol,
+            tls = tls?.Protocol.ToString()
+        });
+        return;
+    }
 
     string mode, modeDetail;
     X509Certificate2? clientCert = null;
@@ -134,6 +197,10 @@ decision differ.</p>
 works in every browser. <b>delay.local</b> tries to fetch the cert AFTER the handshake, so a modern
 browser (HTTP/2) may fail or error here &mdash; that is the regression the in-handshake binding
 fixes. <b>nocert.local</b> never asks.</p>
+<p class="muted"><b>Clean-design API demo (certauth.local):</b> <code>GET /token</code> requires the
+in-handshake client cert and returns a simulated bearer token; <code>GET /api/whoami</code> accepts
+that bearer with <b>no</b> client cert &mdash; the "authenticate once, then bearer" flow on one
+hostname. Run <code>scripts/3-probe.ps1</code> to watch it end to end.</p>
 </body></html>
 """;
 

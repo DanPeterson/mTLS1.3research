@@ -49,6 +49,27 @@ clients) — the real driver behind the 7443 proposal — while the **in-handsha
 the same client over both HTTP/1.1 and HTTP/2. Both live on the same port 443, selected by SNI.
 Reproduce with `scripts/3-probe.ps1`.
 
+### The recommended deployment: cert once → bearer thereafter (same hostname)
+
+The demo also implements the flow SPP's SDKs (SafeguardJava, safeguard-bash, PySafeguard, …) actually
+use — a client cert only to obtain a token, then a bearer for every subsequent call — entirely on the
+cert-auth hostname. Two endpoints on `certauth.local` model it:
+
+| Request | client cert | bearer | result |
+|---------|-------------|--------|--------|
+| `GET /token` | **yes** (in-handshake) | — | **200** — mints a simulated access token |
+| `GET /api/whoami` | **no** | yes | **200** — `presented_client_cert:false`; authorized by bearer alone |
+| `GET /token` | no | — | **403** — cert required *only* here |
+| `GET /api/whoami` | no | no | **401** — bearer required here |
+
+The decisive row is the second: a request to the **same cert-SNI host** carrying **no client cert**
+succeeds because it presents a valid bearer. So the SDK authenticates **once** with its cert, then
+keeps calling the same hostname with just the token — no keystore on the later calls, no switch back
+to the primary DNS name. This is why the cert SNI should be `clientcertnegotiation=enable`
+(in-handshake) with the cert treated as **optional (allow)** and the requirement scoped to the token
+endpoint — matching how SPP already gates cert auth at token issuance today.
+
+
 ### What this proves
 
 **TLS 1.3 client-certificate authentication coexists on port 443 with ordinary traffic on the same
