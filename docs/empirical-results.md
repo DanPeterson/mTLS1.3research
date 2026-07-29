@@ -37,17 +37,17 @@ modes are a binding + app-layer combination, not three ports.
 
 ### The HTTP/2 contrast (the decisive result)
 
-Re-running the same two hosts over **HTTP/2**:
+Re-running the same two hosts over **HTTP/2** (captured):
 
 | URL | app fetch | HTTP | result |
 |-----|-----------|------|--------|
-| `https://certauth.local/` | cached property (in-handshake) | **HTTP/2** | **CN=demo-client** — works |
-| `https://delay.local/`    | `GetClientCertificateAsync()` (post-handshake) | **HTTP/2** | **request fails** — HTTP/2 forbids PHA |
+| `https://certauth.local/` | cached property (in-handshake) | **HTTP/2** | **CN=demo-client** — authenticated |
+| `https://delay.local/`    | `GetClientCertificateAsync()` (post-handshake) | **HTTP/2** | **no client certificate** — client offered one, but PHA is forbidden on HTTP/2 |
 
-This is the crux: the **delayed/PHA** path is exactly what breaks over HTTP/2 and for TLS 1.3 async
-clients — the real driver behind the 7443 proposal — while the **in-handshake** binding works over
-both HTTP/1.1 and HTTP/2. Both live on the same port 443, selected by SNI. Reproduce with
-`scripts/3-probe.ps1`.
+This is the crux: the **delayed/PHA** path cannot collect the cert over HTTP/2 (or for TLS 1.3 async
+clients) — the real driver behind the 7443 proposal — while the **in-handshake** binding authenticates
+the same client over both HTTP/1.1 and HTTP/2. Both live on the same port 443, selected by SNI.
+Reproduce with `scripts/3-probe.ps1`.
 
 ### What this proves
 

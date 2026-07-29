@@ -20,7 +20,7 @@ Three client-cert behaviors, all on port 443, selected purely by the SNI hostnam
 | You browse to | netsh binding | App behavior | Models | Browser |
 |---------------|---------------|--------------|--------|---------|
 | `https://certauth.local/` | `clientcertnegotiation=enable` | reads cached cert | **in-handshake mTLS** (the fix) | **Prompts**; page shows `CN=demo-client` |
-| `https://delay.local/` | `clientcertnegotiation=disable` | `GetClientCertificateAsync()` | **delayed / PHA** (SPP's current default) | prompts *after* load, or **errors** over HTTP/2 |
+| `https://delay.local/` | `clientcertnegotiation=disable` | `GetClientCertificateAsync()` | **delayed / PHA** (SPP's current default) | prompts on HTTP/1.1; over HTTP/2 gets **no cert** (auth fails) |
 | `https://nocert.local/` | `clientcertnegotiation=disable` | never reads cert | **no client auth** (opt-out) | **No prompt** |
 | `https://127.0.0.1/` | `clientcertnegotiation=disable` (IP) | never reads cert | no client auth (raw IP) | **No prompt** |
 
@@ -28,10 +28,11 @@ Three client-cert behaviors, all on port 443, selected purely by the SNI hostnam
 app asks for the cert. That's the point: in-handshake vs delayed vs none is one SNI-scoped binding
 plus one app decision. No second port anywhere.
 
-**The HTTP/2 contrast (`3-probe.ps1`) is the money shot:** `certauth.local` returns the client cert
-over **both** HTTP/1.1 and HTTP/2, while `delay.local` **fails over HTTP/2** — because HTTP/2 forbids
-the post-handshake authentication the delayed path depends on. That failure is the real reason behind
-the 7443 proposal, and the in-handshake binding fixes it on the same port.
+**The HTTP/2 contrast (`3-probe.ps1`) is the money shot:** `certauth.local` authenticates the client
+cert over **both** HTTP/1.1 and HTTP/2, while `delay.local` gets **no cert over HTTP/2** — because
+HTTP/2 forbids the post-handshake authentication the delayed path depends on. The same client offering
+the same cert authenticates on the in-handshake binding but not the delayed one. That gap is the real
+reason behind the 7443 proposal, and the in-handshake binding closes it on the same port.
 
 All hosts resolve to the same `0.0.0.0:443` listener in one process, using one server certificate.
 Only the SNI/IP-selected binding differs. That is the entire point: **no second port is needed.**
@@ -73,8 +74,9 @@ Then **verify visually** — open Edge or Chrome:
   cert was requested **in the handshake**.
 - Browse to **https://nocert.local/** → **no prompt**; the app never asks for a cert.
 - Browse to **https://delay.local/** → the app tries to fetch the cert **after** the handshake. A
-  modern browser negotiates HTTP/2, where post-handshake auth is forbidden, so this page typically
-  **errors or hangs** — that is the delayed-path regression on display.
+  modern browser negotiates HTTP/2, where post-handshake auth is forbidden, so the page loads but
+  shows **no client certificate** — the client offered one, but the delayed path couldn't collect it.
+  That silent auth failure is the delayed-path regression.
 - Browse to **https://127.0.0.1/** → **no prompt** (raw-IP path, no SNI).
 
 And/or **verify automatically** (any PowerShell, no elevation needed) in a second window:
@@ -83,7 +85,7 @@ And/or **verify automatically** (any PowerShell, no elevation needed) in a secon
 .\scripts\3-probe.ps1
 ```
 
-Expected (abridged):
+Expected (from a real run):
 
 ```
 ===== HTTP/1.1 -- all three behaviors succeed =====
@@ -96,14 +98,23 @@ Expected (abridged):
 ### https://nocert.local/    (HTTP/1.1, client offers cert: True)
   NO client auth - port 443, TLS Tls13, HTTP/1.1
   client cert : no client certificate
+### https://127.0.0.1/       (HTTP/1.1, client offers cert: True)
+  NO client auth - port 443, TLS Tls13, HTTP/1.1
+  client cert : no client certificate
 
 ===== HTTP/2 -- the contrast that proves the binding problem =====
 ### https://certauth.local/  (HTTP/2, client offers cert: True)
   IN-HANDSHAKE mTLS - port 443, TLS Tls13, HTTP/2
-  client cert : CN=demo-client            # in-handshake works over HTTP/2
+  client cert : CN=demo-client            # in-handshake authenticates over HTTP/2
 ### https://delay.local/     (HTTP/2, client offers cert: True)
-  REQUEST FAILED: ...                     # PHA is forbidden over HTTP/2
+  DELAYED / post-handshake (PHA) - port 443, TLS Tls13, HTTP/2
+  client cert : no client certificate     # client offered a cert, but PHA is forbidden on HTTP/2
 ```
+
+The last two lines are the whole argument: **the same client offering the same certificate is
+authenticated on `certauth.local` over HTTP/2, but gets no cert on `delay.local` over HTTP/2** — the
+delayed/post-handshake path can't collect it. Move the request to the in-handshake binding and it
+works, on the same port 443.
 
 When you're done:
 

@@ -35,10 +35,15 @@ Import-PfxCertificate -FilePath (Join-Path $certDir "client.pfx") -CertStoreLoca
 
 Write-Host "== Adding hosts entries ==" -ForegroundColor Cyan
 $lines = Get-Content $hostsFile
-if ($lines -notmatch [regex]::Escape($marker)) {
-    foreach ($h in $manifest.hostnames) { Add-Content $hostsFile "127.0.0.1 $h $marker" }
-    Write-Host "  $($manifest.hostnames -join ', ') -> 127.0.0.1"
-} else { Write-Host "  hosts entries already present" }
+foreach ($h in $manifest.hostnames) {
+    $rx = "^\s*127\.0\.0\.1\s+$([regex]::Escape($h))(\s|$)"
+    if ($lines -notmatch $rx) {
+        Add-Content $hostsFile "127.0.0.1 $h $marker"
+        Write-Host "  + $h -> 127.0.0.1"
+    } else {
+        Write-Host "  = $h already present"
+    }
+}
 
 Write-Host "== Creating netsh sslcert bindings on :443 ==" -ForegroundColor Cyan
 $hash = $manifest.serverThumbprint

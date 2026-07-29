@@ -50,15 +50,15 @@ Probe "https://127.0.0.1/"      $true  "1.1"   # ipport  -> no in-handshake    -
 
 Write-Host "`n=========================================================================" -ForegroundColor DarkGray
 Write-Host " HTTP/2 -- the contrast that proves the binding problem" -ForegroundColor White
-Write-Host " in-handshake WORKS over HTTP/2; delayed/PHA CANNOT (HTTP/2 forbids PHA)" -ForegroundColor White
+Write-Host " in-handshake authenticates over HTTP/2; delayed/PHA gets NO cert (HTTP/2 forbids PHA)" -ForegroundColor White
 Write-Host "=========================================================================" -ForegroundColor DarkGray
 Probe "https://certauth.local/" $true  "2.0"   # in-handshake -> succeeds, CN=demo-client
-Probe "https://delay.local/"    $true  "2.0"   # delayed/PHA  -> EXPECTED to fail over HTTP/2
+Probe "https://delay.local/"    $true  "2.0"   # delayed/PHA  -> server gets NO cert over HTTP/2 (auth fails)
 
 Write-Host "`nTakeaway: TLS 1.3 client-cert auth works on 443 for EVERY client when the cert is" -ForegroundColor DarkGray
 Write-Host "requested IN the handshake (certauth.local). The delayed/PHA path (delay.local) is what" -ForegroundColor DarkGray
 Write-Host "breaks HTTP/2 and TLS 1.3 async clients -- the real reason behind the 7443 proposal --" -ForegroundColor DarkGray
 Write-Host "and it is fixed by an SNI-scoped in-handshake binding, no second port required." -ForegroundColor DarkGray
 Write-Host "`n(Visual proof: browse https://certauth.local/ in Edge/Chrome -> certificate prompt;" -ForegroundColor DarkGray
-Write-Host " https://nocert.local/ -> no prompt; https://delay.local/ -> may error in a browser," -ForegroundColor DarkGray
-Write-Host " which is exactly the post-handshake regression this demonstrates.)" -ForegroundColor DarkGray
+Write-Host " https://nocert.local/ -> no prompt; https://delay.local/ -> over HTTP/2 the browser gets" -ForegroundColor DarkGray
+Write-Host " NO client cert (auth silently fails) -- exactly the post-handshake regression shown here.)" -ForegroundColor DarkGray
